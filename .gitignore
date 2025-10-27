@@ -1,0 +1,37 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Database files (large)
+data/*.db
+*.db
+
+# Logs
+logs/
+*.log
+
+# Jupyter notebooks (exploratory)
+notebooks/
+*.ipynb
+
+# Environment variables
+.env
+.env.local
+
+# Node modules
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

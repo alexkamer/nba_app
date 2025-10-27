@@ -1,0 +1,763 @@
+import { useParams, useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import axios from 'axios';
+import { useState } from 'react';
+import PlayerImage from '../components/PlayerImage';
+
+const API_BASE_URL = 'http://127.0.0.1:8000/api';
+
+interface PropPrediction {
+  athlete_id: string;
+  player_name: string;
+  team_name: string;
+  stat_type: string;
+  prediction: number;
+  vegas_line: number | null;
+  edge: number | null;
+  confidence: string;
+  recommendation: string;
+}
+
+export default function GamePreview() {
+  const { gameId } = useParams<{ gameId: string }>();
+  const navigate = useNavigate();
+
+  // State for filter-based selection
+  const [selectedTeam, setSelectedTeam] = useState<'away' | 'home' | null>(null);
+  const [selectedPlayer, setSelectedPlayer] = useState<string | null>(null);
+  const [selectedProp, setSelectedProp] = useState<string | null>(null);
+
+  // Fetch game data
+  const { data: gameData, isLoading: isLoadingGame } = useQuery({
+    queryKey: ['game', gameId],
+    queryFn: async () => {
+      const { data } = await axios.get(`${API_BASE_URL}/games/${gameId}/live`);
+      return data;
+    },
+  });
+
+  // Fetch team details
+  const { data: awayTeamData } = useQuery({
+    queryKey: ['team', gameData?.away_team?.team_id],
+    queryFn: async () => {
+      const { data } = await axios.get(`${API_BASE_URL}/teams/live/${gameData.away_team.team_id}`);
+      return data;
+    },
+    enabled: !!gameData?.away_team?.team_id,
+  });
+
+  const { data: homeTeamData } = useQuery({
+    queryKey: ['team', gameData?.home_team?.team_id],
+    queryFn: async () => {
+      const { data } = await axios.get(`${API_BASE_URL}/teams/live/${gameData.home_team.team_id}`);
+      return data;
+    },
+    enabled: !!gameData?.home_team?.team_id,
+  });
+
+  // Fetch player props
+  const { data: playerProps } = useQuery({
+    queryKey: ['player-props', gameId],
+    queryFn: async () => {
+      const { data } = await axios.get(`${API_BASE_URL}/games/${gameId}/props`);
+      return data;
+    },
+    enabled: !!gameId,
+  });
+
+  // Fetch predictions
+  const { data: predictions } = useQuery({
+    queryKey: ['predictions', gameId],
+    queryFn: async () => {
+      const { data } = await axios.get(`${API_BASE_URL}/predictions/game/${gameId}`);
+      return data;
+    },
+    enabled: !!gameId,
+  });
+
+  // Fetch game odds
+  const { data: odds } = useQuery({
+    queryKey: ['odds', gameId],
+    queryFn: async () => {
+      const { data } = await axios.get(`${API_BASE_URL}/games/${gameId}/odds`);
+      return data;
+    },
+    enabled: !!gameId,
+  });
+
+  if (isLoadingGame) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="animate-spin h-12 w-12 border-4 border-orange-500 border-t-transparent rounded-full"></div>
+      </div>
+    );
+  }
+
+  if (!gameData) {
+    return (
+      <div className="bg-red-900/20 border border-red-500/50 rounded-xl p-6 text-center">
+        <p className="text-red-400">Game not found</p>
+      </div>
+    );
+  }
+
+  const awayTeam = gameData.away_team;
+  const homeTeam = gameData.home_team;
+
+  // Helper function to get confidence badge color
+  const getConfidenceBadge = (confidence: string) => {
+    const colors = {
+      High: 'bg-green-500/20 border-green-500/50 text-green-400',
+      Medium: 'bg-yellow-500/20 border-yellow-500/50 text-yellow-400',
+      Low: 'bg-gray-500/20 border-gray-500/50 text-gray-400',
+    };
+    return colors[confidence as keyof typeof colors] || colors.Low;
+  };
+
+
+  // Group predictions by team and player
+  const predictionsByTeam: {
+    away: { [playerId: string]: PropPrediction[] },
+    home: { [playerId: string]: PropPrediction[] }
+  } = { away: {}, home: {} };
+
+  if (predictions && Array.isArray(predictions)) {
+    predictions.forEach((pred: PropPrediction) => {
+      // Match team by name since API doesn't return team_id
+      const teamKey = pred.team_name === awayTeam?.team_name ? 'away' : 'home';
+      if (!predictionsByTeam[teamKey][pred.athlete_id]) {
+        predictionsByTeam[teamKey][pred.athlete_id] = [];
+      }
+      predictionsByTeam[teamKey][pred.athlete_id].push(pred);
+    });
+  }
+
+  // Get available teams, players, and props
+  const availableTeams = [
+    { key: 'away' as const, name: awayTeam?.team_name, logo: awayTeam?.team_logo },
+    { key: 'home' as const, name: homeTeam?.team_name, logo: homeTeam?.team_logo },
+  ].filter(t => t.name);
+
+  const availablePlayers = selectedTeam
+    ? Object.entries(predictionsByTeam[selectedTeam]).map(([id, preds]) => ({
+        id,
+        name: preds[0].player_name,
+        predictions: preds,
+      })).sort((a, b) => {
+        const aMaxEdge = Math.max(...a.predictions.map(p => Math.abs(p.edge || 0)));
+        const bMaxEdge = Math.max(...b.predictions.map(p => Math.abs(p.edge || 0)));
+        return bMaxEdge - aMaxEdge;
+      })
+    : [];
+
+  const availableProps = selectedPlayer && selectedTeam
+    ? predictionsByTeam[selectedTeam][selectedPlayer] || []
+    : [];
+
+  const selectedPropData = availableProps.find((_, idx) => `${selectedPlayer}-${idx}` === selectedProp);
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-4xl font-bold mb-2">Game Preview</h1>
+          <p className="text-slate-400">Pre-game analysis and predictions</p>
+        </div>
+        <button
+          onClick={() => navigate('/schedule')}
+          className="px-4 py-2 bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-lg text-white transition-colors"
+        >
+          ← Back to Schedule
+        </button>
+      </div>
+
+      {/* Team Matchup */}
+      <div className="bg-slate-800 rounded-xl p-8 border border-slate-700 shadow-xl">
+        <div className="flex items-center justify-between gap-8">
+          {/* Away Team */}
+          <div className="flex-1 flex flex-col items-center">
+            {awayTeam?.team_logo && (
+              <img
+                src={awayTeam.logo}
+                alt={awayTeam.name}
+                className="w-32 h-32 object-contain mb-4"
+              />
+            )}
+            <div className="text-center">
+              <h2 className="text-2xl font-bold mb-1">{awayTeam?.team_name}</h2>
+              <p className="text-slate-400">
+                {awayTeamData?.record?.summary || awayTeamData?.record || 'N/A'}
+              </p>
+            </div>
+          </div>
+
+          {/* VS */}
+          <div className="text-4xl font-bold text-slate-600">@</div>
+
+          {/* Home Team */}
+          <div className="flex-1 flex flex-col items-center">
+            {homeTeam?.team_logo && (
+              <img
+                src={homeTeam.logo}
+                alt={homeTeam.name}
+                className="w-32 h-32 object-contain mb-4"
+              />
+            )}
+            <div className="text-center">
+              <h2 className="text-2xl font-bold mb-1">{homeTeam?.team_name}</h2>
+              <p className="text-slate-400">
+                {homeTeamData?.record?.summary || homeTeamData?.record || 'N/A'}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Game Info */}
+        <div className="mt-6 pt-6 border-t border-slate-700 text-center space-y-2">
+          {gameData.date && (
+            <div className="text-lg font-semibold text-orange-500">
+              {new Date(gameData.date).toLocaleString('en-US', {
+                weekday: 'long',
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric',
+                hour: 'numeric',
+                minute: '2-digit',
+                timeZoneName: 'short',
+              })}
+            </div>
+          )}
+          {gameData.venue?.name && (
+            <div className="text-sm text-slate-400">
+              {gameData.venue.name}
+              {gameData.venue.city && ` • ${gameData.venue.city}, ${gameData.venue.state}`}
+            </div>
+          )}
+          {gameData.broadcast && gameData.broadcast.length > 0 && (
+            <div className="text-sm text-slate-400">
+              📺 {gameData.broadcast.flat().join(', ')}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Betting Odds */}
+      {odds && odds.available && (
+        <div className="bg-slate-800 rounded-xl p-6 border border-slate-700 shadow-xl">
+          <h3 className="text-xl font-bold mb-4 text-center">Betting Odds</h3>
+          <div className="text-xs text-slate-500 mb-4 text-center">
+            {odds.provider || 'Provider not specified'}
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Spread */}
+            <div className="bg-slate-700/30 rounded-lg p-4 text-center">
+              <div className="text-sm text-slate-500 mb-2">Spread</div>
+              <div className="text-2xl font-bold text-orange-400">{odds.spread_details}</div>
+            </div>
+            {/* Over/Under */}
+            <div className="bg-slate-700/30 rounded-lg p-4 text-center">
+              <div className="text-sm text-slate-500 mb-2">Over/Under</div>
+              <div className="text-2xl font-bold text-orange-400">{odds.over_under}</div>
+            </div>
+            {/* Moneyline */}
+            <div className="bg-slate-700/30 rounded-lg p-4 text-center">
+              <div className="text-sm text-slate-500 mb-2">Moneyline</div>
+              <div className="space-y-1">
+                <div className="text-sm">
+                  <span className="text-slate-400">{awayTeam?.team_abbreviation}: </span>
+                  <span className="font-bold text-orange-400">
+                    {odds.away_moneyline > 0 ? '+' : ''}{odds.away_moneyline}
+                  </span>
+                </div>
+                <div className="text-sm">
+                  <span className="text-slate-400">{homeTeam?.team_abbreviation}: </span>
+                  <span className="font-bold text-orange-400">
+                    {odds.home_moneyline > 0 ? '+' : ''}{odds.home_moneyline}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Injury Reports */}
+      <div className="bg-slate-800 rounded-xl p-6 border border-slate-700 shadow-xl">
+        <h3 className="text-xl font-bold mb-4 text-center">Injury Report</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Away Team Injuries */}
+          <div>
+            <div className="text-center mb-4">
+              <div className="flex items-center justify-center gap-2 mb-2">
+                {awayTeam?.team_logo && (
+                  <img src={awayTeam.team_logo} alt={awayTeam.team_name} className="w-6 h-6 object-contain" />
+                )}
+                <h4 className="font-bold">{awayTeam?.team_name}</h4>
+              </div>
+            </div>
+            {gameData?.away_injuries && gameData.away_injuries.length > 0 ? (
+              <div className="space-y-3">
+                {gameData.away_injuries.map((injury: any) => (
+                  <div key={injury.athlete_id} className="bg-slate-700/30 rounded-lg p-3">
+                    <div className="flex items-center gap-3">
+                      {injury.athlete_headshot && (
+                        <img
+                          src={injury.athlete_headshot}
+                          alt={injury.athlete_name}
+                          className="w-12 h-12 rounded-full bg-slate-700 object-cover"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                          }}
+                        />
+                      )}
+                      <div className="flex-1">
+                        <div className="font-bold text-sm">{injury.athlete_name}</div>
+                        <div className="text-xs text-slate-500">{injury.position}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-xs font-bold text-red-400">{injury.status}</div>
+                        <div className="text-xs text-slate-500">{injury.type}</div>
+                      </div>
+                    </div>
+                    {injury.details && (
+                      <div className="mt-2 text-xs text-slate-400 italic">{injury.details}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center text-slate-500 py-4">
+                ✅ No injuries reported
+              </div>
+            )}
+          </div>
+
+          {/* Home Team Injuries */}
+          <div>
+            <div className="text-center mb-4">
+              <div className="flex items-center justify-center gap-2 mb-2">
+                {homeTeam?.team_logo && (
+                  <img src={homeTeam.team_logo} alt={homeTeam.team_name} className="w-6 h-6 object-contain" />
+                )}
+                <h4 className="font-bold">{homeTeam?.team_name}</h4>
+              </div>
+            </div>
+            {gameData?.home_injuries && gameData.home_injuries.length > 0 ? (
+              <div className="space-y-3">
+                {gameData.home_injuries.map((injury: any) => (
+                  <div key={injury.athlete_id} className="bg-slate-700/30 rounded-lg p-3">
+                    <div className="flex items-center gap-3">
+                      {injury.athlete_headshot && (
+                        <img
+                          src={injury.athlete_headshot}
+                          alt={injury.athlete_name}
+                          className="w-12 h-12 rounded-full bg-slate-700 object-cover"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                          }}
+                        />
+                      )}
+                      <div className="flex-1">
+                        <div className="font-bold text-sm">{injury.athlete_name}</div>
+                        <div className="text-xs text-slate-500">{injury.position}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-xs font-bold text-red-400">{injury.status}</div>
+                        <div className="text-xs text-slate-500">{injury.type}</div>
+                      </div>
+                    </div>
+                    {injury.details && (
+                      <div className="mt-2 text-xs text-slate-400 italic">{injury.details}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center text-slate-500 py-4">
+                ✅ No injuries reported
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Player Prop Analysis */}
+      {predictions && predictions.length > 0 && (
+        <div className="bg-slate-800 rounded-xl p-6 border border-slate-700 shadow-xl">
+          <div className="mb-6">
+            <h3 className="text-xl font-bold mb-2">Prop Analysis</h3>
+            <p className="text-xs text-slate-500">
+              Vegas+ Model (65% Vegas + 35% Statistical) • Select team, player, and prop to view analysis
+            </p>
+          </div>
+
+          {/* Compact Filter Interface */}
+          <div className="space-y-4 mb-6">
+            {/* Away Team */}
+            {Object.keys(predictionsByTeam.away).length > 0 && (
+              <div className="border border-slate-700 rounded-lg overflow-hidden">
+                <button
+                  onClick={() => toggleTeam('away')}
+                  className="w-full px-4 py-3 bg-slate-700/50 hover:bg-slate-700 transition-colors flex items-center justify-between"
+                >
+                  <div className="flex items-center gap-3">
+                    {awayTeam?.team_logo && (
+                      <img src={awayTeam.logo} alt={awayTeam.name} className="w-8 h-8 object-contain" />
+                    )}
+                    <div className="text-left">
+                      <div className="font-bold">{awayTeam?.team_name}</div>
+                      <div className="text-xs text-slate-400">
+                        {Object.keys(predictionsByTeam.away).length} players • {
+                          Object.values(predictionsByTeam.away).reduce((sum, props) => sum + props.length, 0)
+                        } props
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-2xl text-slate-400">
+                    {expandedTeam === 'away' ? '−' : '+'}
+                  </div>
+                </button>
+
+                {/* Away Team Players */}
+                {expandedTeam === 'away' && (
+                  <div className="bg-slate-800/50">
+                    {getSortedPlayers(predictionsByTeam.away).map(([playerId, playerPredictions]) => {
+                      const player = playerPredictions[0];
+                      const maxEdge = Math.max(...playerPredictions.map(p => Math.abs(p.edge || 0)));
+                      const isPlayerExpanded = expandedPlayers.has(playerId);
+
+                      return (
+                        <div key={playerId} className="border-t border-slate-700">
+                          <button
+                            onClick={() => togglePlayer(playerId)}
+                            className="w-full px-6 py-3 hover:bg-slate-700/30 transition-colors flex items-center justify-between"
+                          >
+                            <div className="flex items-center gap-3">
+                              <PlayerImage
+                                src={undefined}
+                                alt={player.player_name}
+                                className="w-10 h-10 rounded-full bg-slate-700 object-cover"
+                                fallbackInitial={player.player_name.charAt(0)}
+                              />
+                              <div className="text-left">
+                                <div className="font-semibold">{player.player_name}</div>
+                                <div className="text-xs text-slate-400">
+                                  {playerPredictions.length} props • Max edge: {maxEdge.toFixed(1)}
+                                </div>
+                              </div>
+                              {maxEdge >= 3.0 && (
+                                <span className="px-2 py-0.5 bg-orange-500/20 border border-orange-500/50 rounded text-xs font-bold text-orange-400">
+                                  🔥
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xl text-slate-400">
+                              {isPlayerExpanded ? '−' : '+'}
+                            </div>
+                          </button>
+
+                          {/* Player Props */}
+                          {isPlayerExpanded && (
+                            <div className="px-6 pb-3 space-y-2">
+                              {playerPredictions.map((pred, idx) => {
+                                const propKey = `${playerId}-${idx}`;
+                                const isPropExpanded = expandedProps.has(propKey);
+                                const absEdge = Math.abs(pred.edge || 0);
+
+                                return (
+                                  <div key={idx} className="bg-slate-700/30 rounded-lg overflow-hidden">
+                                    <button
+                                      onClick={() => toggleProp(propKey)}
+                                      className="w-full px-4 py-2 hover:bg-slate-700/50 transition-colors flex items-center justify-between"
+                                    >
+                                      <div className="flex items-center gap-3">
+                                        <div className="text-left">
+                                          <div className="text-sm font-semibold">{pred.stat_type.replace('Total ', '')}</div>
+                                          <div className="text-xs text-slate-400">
+                                            Line: {pred.vegas_line?.toFixed(1) || 'N/A'} • Edge: {pred.edge ? `${pred.edge > 0 ? '+' : ''}${pred.edge.toFixed(1)}` : 'N/A'}
+                                          </div>
+                                        </div>
+                                        {absEdge >= 1.5 && (
+                                          <span className={`px-2 py-0.5 rounded text-xs font-bold ${
+                                            absEdge >= 3.0
+                                              ? 'bg-orange-500/20 border border-orange-500/50 text-orange-400'
+                                              : 'bg-yellow-500/20 border border-yellow-500/50 text-yellow-400'
+                                          }`}>
+                                            {absEdge >= 3.0 ? 'HIGH' : 'MED'}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="text-lg text-slate-400">
+                                        {isPropExpanded ? '−' : '+'}
+                                      </div>
+                                    </button>
+
+                                    {/* Prop Details */}
+                                    {isPropExpanded && (
+                                      <div className="px-4 py-3 bg-slate-800/50 border-t border-slate-700">
+                                        <div className="grid grid-cols-3 gap-3 mb-3">
+                                          <div className="text-center">
+                                            <div className="text-xs text-slate-500 mb-1">Our Prediction</div>
+                                            <div className="text-2xl font-bold text-orange-400">{pred.prediction.toFixed(1)}</div>
+                                          </div>
+                                          <div className="text-center">
+                                            <div className="text-xs text-slate-500 mb-1">Vegas Line</div>
+                                            <div className="text-2xl font-bold">{pred.vegas_line?.toFixed(1) || 'N/A'}</div>
+                                          </div>
+                                          <div className="text-center">
+                                            <div className="text-xs text-slate-500 mb-1">Edge</div>
+                                            <div className={`text-2xl font-bold ${
+                                              pred.edge && Math.abs(pred.edge) >= 1.5
+                                                ? pred.edge > 0 ? 'text-green-400' : 'text-red-400'
+                                                : 'text-slate-400'
+                                            }`}>
+                                              {pred.edge ? `${pred.edge > 0 ? '+' : ''}${pred.edge.toFixed(1)}` : 'N/A'}
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <div className="flex items-center justify-between">
+                                          <span className={`px-3 py-1 rounded text-xs font-bold border ${getConfidenceBadge(pred.confidence)}`}>
+                                            {pred.confidence} Confidence
+                                          </span>
+                                          {pred.recommendation && pred.recommendation !== 'PASS' && (
+                                            <span className={`px-3 py-1 rounded text-xs font-bold ${
+                                              pred.recommendation === 'OVER'
+                                                ? 'bg-green-500/20 border border-green-500/50 text-green-400'
+                                                : 'bg-red-500/20 border border-red-500/50 text-red-400'
+                                            }`}>
+                                              {pred.recommendation === 'OVER' ? '⬆️ OVER' : '⬇️ UNDER'}
+                                            </span>
+                                          )}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Home Team */}
+            {Object.keys(predictionsByTeam.home).length > 0 && (
+              <div className="border border-slate-700 rounded-lg overflow-hidden">
+                <button
+                  onClick={() => toggleTeam('home')}
+                  className="w-full px-4 py-3 bg-slate-700/50 hover:bg-slate-700 transition-colors flex items-center justify-between"
+                >
+                  <div className="flex items-center gap-3">
+                    {homeTeam?.team_logo && (
+                      <img src={homeTeam.logo} alt={homeTeam.name} className="w-8 h-8 object-contain" />
+                    )}
+                    <div className="text-left">
+                      <div className="font-bold">{homeTeam?.team_name}</div>
+                      <div className="text-xs text-slate-400">
+                        {Object.keys(predictionsByTeam.home).length} players • {
+                          Object.values(predictionsByTeam.home).reduce((sum, props) => sum + props.length, 0)
+                        } props
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-2xl text-slate-400">
+                    {expandedTeam === 'home' ? '−' : '+'}
+                  </div>
+                </button>
+
+                {/* Home Team Players */}
+                {expandedTeam === 'home' && (
+                  <div className="bg-slate-800/50">
+                    {getSortedPlayers(predictionsByTeam.home).map(([playerId, playerPredictions]) => {
+                      const player = playerPredictions[0];
+                      const maxEdge = Math.max(...playerPredictions.map(p => Math.abs(p.edge || 0)));
+                      const isPlayerExpanded = expandedPlayers.has(playerId);
+
+                      return (
+                        <div key={playerId} className="border-t border-slate-700">
+                          <button
+                            onClick={() => togglePlayer(playerId)}
+                            className="w-full px-6 py-3 hover:bg-slate-700/30 transition-colors flex items-center justify-between"
+                          >
+                            <div className="flex items-center gap-3">
+                              <PlayerImage
+                                src={undefined}
+                                alt={player.player_name}
+                                className="w-10 h-10 rounded-full bg-slate-700 object-cover"
+                                fallbackInitial={player.player_name.charAt(0)}
+                              />
+                              <div className="text-left">
+                                <div className="font-semibold">{player.player_name}</div>
+                                <div className="text-xs text-slate-400">
+                                  {playerPredictions.length} props • Max edge: {maxEdge.toFixed(1)}
+                                </div>
+                              </div>
+                              {maxEdge >= 3.0 && (
+                                <span className="px-2 py-0.5 bg-orange-500/20 border border-orange-500/50 rounded text-xs font-bold text-orange-400">
+                                  🔥
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xl text-slate-400">
+                              {isPlayerExpanded ? '−' : '+'}
+                            </div>
+                          </button>
+
+                          {/* Player Props */}
+                          {isPlayerExpanded && (
+                            <div className="px-6 pb-3 space-y-2">
+                              {playerPredictions.map((pred, idx) => {
+                                const propKey = `${playerId}-${idx}`;
+                                const isPropExpanded = expandedProps.has(propKey);
+                                const absEdge = Math.abs(pred.edge || 0);
+
+                                return (
+                                  <div key={idx} className="bg-slate-700/30 rounded-lg overflow-hidden">
+                                    <button
+                                      onClick={() => toggleProp(propKey)}
+                                      className="w-full px-4 py-2 hover:bg-slate-700/50 transition-colors flex items-center justify-between"
+                                    >
+                                      <div className="flex items-center gap-3">
+                                        <div className="text-left">
+                                          <div className="text-sm font-semibold">{pred.stat_type.replace('Total ', '')}</div>
+                                          <div className="text-xs text-slate-400">
+                                            Line: {pred.vegas_line?.toFixed(1) || 'N/A'} • Edge: {pred.edge ? `${pred.edge > 0 ? '+' : ''}${pred.edge.toFixed(1)}` : 'N/A'}
+                                          </div>
+                                        </div>
+                                        {absEdge >= 1.5 && (
+                                          <span className={`px-2 py-0.5 rounded text-xs font-bold ${
+                                            absEdge >= 3.0
+                                              ? 'bg-orange-500/20 border border-orange-500/50 text-orange-400'
+                                              : 'bg-yellow-500/20 border border-yellow-500/50 text-yellow-400'
+                                          }`}>
+                                            {absEdge >= 3.0 ? 'HIGH' : 'MED'}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="text-lg text-slate-400">
+                                        {isPropExpanded ? '−' : '+'}
+                                      </div>
+                                    </button>
+
+                                    {/* Prop Details */}
+                                    {isPropExpanded && (
+                                      <div className="px-4 py-3 bg-slate-800/50 border-t border-slate-700">
+                                        <div className="grid grid-cols-3 gap-3 mb-3">
+                                          <div className="text-center">
+                                            <div className="text-xs text-slate-500 mb-1">Our Prediction</div>
+                                            <div className="text-2xl font-bold text-orange-400">{pred.prediction.toFixed(1)}</div>
+                                          </div>
+                                          <div className="text-center">
+                                            <div className="text-xs text-slate-500 mb-1">Vegas Line</div>
+                                            <div className="text-2xl font-bold">{pred.vegas_line?.toFixed(1) || 'N/A'}</div>
+                                          </div>
+                                          <div className="text-center">
+                                            <div className="text-xs text-slate-500 mb-1">Edge</div>
+                                            <div className={`text-2xl font-bold ${
+                                              pred.edge && Math.abs(pred.edge) >= 1.5
+                                                ? pred.edge > 0 ? 'text-green-400' : 'text-red-400'
+                                                : 'text-slate-400'
+                                            }`}>
+                                              {pred.edge ? `${pred.edge > 0 ? '+' : ''}${pred.edge.toFixed(1)}` : 'N/A'}
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <div className="flex items-center justify-between">
+                                          <span className={`px-3 py-1 rounded text-xs font-bold border ${getConfidenceBadge(pred.confidence)}`}>
+                                            {pred.confidence} Confidence
+                                          </span>
+                                          {pred.recommendation && pred.recommendation !== 'PASS' && (
+                                            <span className={`px-3 py-1 rounded text-xs font-bold ${
+                                              pred.recommendation === 'OVER'
+                                                ? 'bg-green-500/20 border border-green-500/50 text-green-400'
+                                                : 'bg-red-500/20 border border-red-500/50 text-red-400'
+                                            }`}>
+                                              {pred.recommendation === 'OVER' ? '⬆️ OVER' : '⬇️ UNDER'}
+                                            </span>
+                                          )}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Fallback: Show raw player props if no predictions */}
+      {(!predictions || predictions.length === 0) && playerProps?.available && (
+        <div className="bg-slate-800 rounded-xl p-6 border border-slate-700 shadow-xl">
+          <div className="mb-6">
+            <h3 className="text-xl font-bold mb-2 text-center">Player Props</h3>
+            <p className="text-xs text-slate-500 text-center">
+              {playerProps.provider} • {playerProps.total_players} players • {playerProps.total_props} props
+            </p>
+          </div>
+
+          <div className="space-y-4">
+            {Object.values(playerProps.props_by_player).map((player: any) => (
+              <div key={player.athlete_id} className="bg-slate-700/30 rounded-lg p-4">
+                <div className="flex items-center gap-3 mb-3">
+                  <PlayerImage
+                    src={player.athlete_headshot}
+                    alt={player.athlete_name}
+                    className="w-10 h-10 rounded-full bg-slate-700 object-cover"
+                    fallbackInitial={player.athlete_name?.charAt(0) || '?'}
+                  />
+                  <div
+                    className="flex-1 font-bold cursor-pointer hover:text-orange-400 transition-colors"
+                    onClick={() => navigate(`/player/${player.athlete_id}`)}
+                  >
+                    {player.athlete_name}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {Object.entries(player.props_by_type).map(([propType, props]: [string, any]) => {
+                    const primaryProp = props[0];
+                    return (
+                      <div key={propType} className="bg-slate-800/50 rounded p-2">
+                        <div className="text-xs text-slate-500 mb-1">{propType.replace('Total ', '')}</div>
+                        <div className="text-lg font-bold text-blue-400">{primaryProp.line}</div>
+                        <div className="flex justify-between text-xs mt-1">
+                          <span className="text-slate-400">O: {primaryProp.over_odds || '--'}</span>
+                          <span className="text-slate-400">U: {primaryProp.under_odds || '--'}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* No Data Available */}
+      {(!predictions || predictions.length === 0) && !playerProps?.available && (
+        <div className="bg-slate-800 rounded-xl p-12 border border-slate-700 text-center">
+          <div className="text-slate-400 text-lg">
+            No predictions or props available for this game yet
+          </div>
+          <div className="text-slate-500 text-sm mt-2">
+            Check back closer to game time for updated data
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
